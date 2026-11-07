@@ -122,7 +122,6 @@ CONTRADICTED = Platform.model_validate({
         "mounts": [{"when": {}, "volume": "wheels"}], "shared-run-root": [{}], "time-limit": "4:00:00",
     }},
     "salloc-time-bump": {"when": {}, "min-conc": 64, "minutes": 1440},
-    "power-lanes": {"srt-multi": []},
     "model-overrides": [{"when": {}, "entry": "M"}],
     "shared-hf-cache-lanes": [{"agentic": True}],
 })
@@ -134,7 +133,6 @@ def test_every_platform_row_its_cluster_record_contradicts_is_reported_at_once()
         "srt-lanes.srt-multi: no volume 'wheels'",
         "srt-lanes.srt-multi: no srt-slurm.shared-run-root",
         "srt-lanes.srt-multi: its time limits are shadowed by default-time-limit",
-        "power-lanes.srt-multi: no srt-slurm.extra.default_gpu_exporter",
         "model-overrides: no models.entries 'M'",
         "shared-hf-cache-lanes: no volume 'shared-hf-hub-cache'",
         "salloc-time-bump: shadowed by the cluster's fixed srt-slurm default-time-limit or "
@@ -147,20 +145,16 @@ def test_every_platform_row_its_cluster_record_contradicts_is_reported_at_once()
     ]
     volumes = {"wheels": {"path": "/wheels"}, "shared-hf-hub-cache": {"path": "/hub"}}
     complete = _cluster(
-        {"network-interface": "", "shared-run-root": "/runs", **EXPORTER},
+        {"network-interface": "", "shared-run-root": "/runs"},
         models={"entries": {"M": {"root": "wheels", "dir": "m"}}},
         slurm={"volumes": volumes},
     )
     assert CONTRADICTED.problems(complete) == []
 
 
-@pytest.mark.parametrize(("rows", "message"), [
-    ({"power-lanes": {"srt-multi": []}}, "power-lanes for missing srt-lanes"),
-    ({"srt-lanes": {"srt-multi": {}}, "native-srt-lanes": [{}]}, "missing srt-lanes.srt-native"),
-])  # fmt: skip
-def test_a_rule_for_a_lane_the_platform_lacks_fails_to_load(rows, message):
-    with pytest.raises(ValidationError, match=message):
-        Platform.model_validate(rows)
+def test_native_rules_without_the_native_lane_fail_to_load():
+    with pytest.raises(ValidationError, match="missing srt-lanes.srt-native"):
+        Platform.model_validate({"srt-lanes": {"srt-multi": {}}, "native-srt-lanes": [{}]})
 
 
 def test_a_launch_checks_its_own_cluster_rows_before_any_work(monkeypatch, capsys):

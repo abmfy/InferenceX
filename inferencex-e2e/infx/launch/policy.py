@@ -23,6 +23,11 @@ if TYPE_CHECKING:
 PLATFORMS = load_platforms()
 
 
+def any_of(*values: str) -> frozenset[str]:
+    """Return ``values`` as a frozenset for a ``Match`` field."""
+    return frozenset(values)
+
+
 class LaunchPath(StrEnum):
     """How ``python -m infx.launch run`` executes one request; ``drivers.ROUTES`` has each driver."""
 

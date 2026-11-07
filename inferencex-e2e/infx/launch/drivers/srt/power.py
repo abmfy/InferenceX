@@ -12,9 +12,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from infx.clusters.platforms import PowerRule
 from infx.launch.context import LaunchError
-from infx.launch.policy import PLATFORMS, LaunchPath
+from infx.launch.policy import LaunchPath, Match, any_of
 
 if TYPE_CHECKING:
     from infx.clusters.slurm import SrtSlurmSettings
@@ -26,6 +25,18 @@ class PowerPolicyError(LaunchError):
 
 
 @dataclass(frozen=True)
+class PowerRule:
+    """How matching points measure AgentX power; ``require`` makes the client fail invalid
+    AgentX power.
+    """
+
+    when: Match
+    agentx: bool
+    adapter: bool = False
+    require: bool = False
+
+
+@dataclass(frozen=True)
 class PowerLane:
     """Ordered power rules for one lane; first match wins."""
 
@@ -33,9 +44,20 @@ class PowerLane:
 
 
 POWER_LANES: dict[tuple[str, LaunchPath], PowerLane] = {
-    (cluster_id, LaunchPath(path)): PowerLane(rules=rules)
-    for cluster_id, platform in PLATFORMS.items()
-    for path, rules in platform.power_lanes.items()
+    ("h200-dgxc", LaunchPath.SRT_MULTI): PowerLane(
+        rules=(
+            PowerRule(
+                Match(
+                    prefixes=any_of("glm5.2"),
+                    precisions=any_of("fp8"),
+                    frameworks=any_of("dynamo-sglang"),
+                    agentic=True,
+                ),
+                agentx=False,
+                adapter=True,
+            ),
+        ),
+    ),
 }
 
 

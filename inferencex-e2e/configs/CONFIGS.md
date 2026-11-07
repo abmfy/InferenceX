@@ -316,11 +316,9 @@ srt-lanes:
   srt-multi:
     frameworks: [dynamo-sglang, dynamo-trt, vllm]
     time-limit: "4:00:00"
-power-lanes:
-  srt-multi:
-  - when: {model-prefix: [glm5.2], precision: [fp8], framework: [dynamo-sglang], agentic: true}
-    agentx: false
-    adapter: true
+model-overrides:
+- when: {model-prefix: [dsr1], precision: [fp8], framework: [dynamo-trt]}
+  served-name: DeepSeek-R1-0528
 ```
 
 - A rule's `when`, and each entry of `native-srt-lanes`, `batch-wrapped-lane`,
@@ -336,8 +334,6 @@ power-lanes:
   lane; `batch-wrapped-lane` runs matching single-node points as a batch job;
   `salloc-time-bump` sets `SALLOC_TIME_LIMIT` to `minutes` for matching benchmark points at
   `CONC >= min-conc`.
-- `power-lanes.<path>` changes how matching points measure AgentX power; the first match
-  wins, and the path needs its `srt-lanes` entry.
 - `model-overrides` give matching points another checkpoint (`entry`, a `models.entries`
   key), a `served-name`, a required readable `config.json`, Hub serving or single-node
   staging; per field, the first matching row wins.
@@ -346,5 +342,5 @@ power-lanes:
 
 Before any work, a launch checks its cluster's platform against the cluster record: a mount
 of an unknown volume, an override of an unknown model entry, a lane time limit or time bump
-that a fixed srt-slurm limit shadows, a power lane without a GPU exporter, or any rule on a
-cluster without `slurm.srt-slurm` fails it.
+that a fixed srt-slurm limit shadows, or any rule on a cluster without `slurm.srt-slurm` fails
+it.

@@ -85,17 +85,6 @@ class SrtLane(Record):
     agentic_result_dir: str = Field(default="/logs/agentic", alias="agentic-result-dir")
 
 
-class PowerRule(Record):
-    """How matching points measure AgentX power; ``require`` makes the client fail invalid
-    AgentX power.
-    """
-
-    when: Match
-    agentx: bool
-    adapter: bool = False
-    require: bool = False
-
-
 class TimeBump(Record):
     """A longer SALLOC_TIME_LIMIT for throughput runs ``when`` matches at ``CONC >= min_conc``."""
 
@@ -122,19 +111,14 @@ class Platform(Record):
     native_srt_lanes: tuple[Match, ...] = Field(default=(), alias="native-srt-lanes")
     batch_wrapped_lane: Match | None = Field(default=None, alias="batch-wrapped-lane")
     salloc_time_bump: TimeBump | None = Field(default=None, alias="salloc-time-bump")
-    power_lanes: dict[LanePath, tuple[PowerRule, ...]] = Field(
-        default_factory=dict, alias="power-lanes"
-    )
     model_overrides: tuple[Override, ...] = Field(default=(), alias="model-overrides")
     shared_hf_cache_lanes: tuple[Match, ...] = Field(default=(), alias="shared-hf-cache-lanes")
 
     @model_validator(mode="after")
-    def _routed_lanes_exist(self) -> Self:
-        """A rule that routes points to a lane, or measures power on one, needs that lane."""
+    def _native_lane_exists(self) -> Self:
+        """Rules that route points to the srt-native lane need that lane."""
         if self.native_srt_lanes and "srt-native" not in self.srt_lanes:
             raise ValueError("native-srt-lanes route points to a missing srt-lanes.srt-native")
-        if missing := sorted(self.power_lanes.keys() - self.srt_lanes.keys()):
-            raise ValueError(f"power-lanes for missing srt-lanes: {missing}")
         return self
 
     def problems(self, cluster: Cluster) -> list[str]:
@@ -163,11 +147,6 @@ class Platform(Record):
                 problems.append(f"{where}: no srt-slurm.shared-run-root")
             if srt.default_time_limit is not None and (lane.time_limit or lane.long_time_limit):
                 problems.append(f"{where}: its time limits are shadowed by default-time-limit")
-        if srt.gpu_exporter_image is None:
-            problems.extend(
-                f"power-lanes.{path}: no srt-slurm.extra.default_gpu_exporter"
-                for path in self.power_lanes
-            )
         problems.extend(
             f"model-overrides: no models.entries {row.entry!r}"
             for row in self.model_overrides
