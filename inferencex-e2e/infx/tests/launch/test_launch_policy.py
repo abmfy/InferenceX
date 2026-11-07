@@ -1,16 +1,16 @@
-"""Power eligibility, allocation-time policy, and the tables' agreement with the cluster inventory."""
+"""Power eligibility, allocation-time policy, and the platforms' agreement with the cluster inventory."""
 
 import json
 
 import pytest
+from pydantic import ValidationError
 
 from infx.clusters import load_inventory
+from infx.clusters.platforms import Match, Override, Platform
 from infx.clusters.slurm import SrtSlurmSettings
 from infx.launch import drivers, policy
 from infx.launch.__main__ import launch
-from infx.launch.context import LaunchError
-from infx.launch.drivers import check_tables
-from infx.launch.drivers.srt import models, power
+from infx.launch.drivers.srt import power
 from infx.launch.drivers.srt.power import PowerPolicyError, decide_power
 from infx.launch.lifecycle import Lifecycle
 from infx.launch.policy import LaunchPath, salloc_time_limit
@@ -89,21 +89,6 @@ def test_a_lane_rule_changes_how_its_matching_agentx_points_measure_power():
     assert (other.agentx, other.adapter) == (True, False)
 
 
-def test_a_power_lane_needs_its_clusters_gpu_exporter(monkeypatch):
-    labels = {"cluster:c": ["c_0"]}
-    srt = {"network-interface": ""}
-    record = {**RECORD, "slurm": {**RECORD["slurm"], "srt-slurm": srt}}
-    clusters = load_inventory({"labels": labels, "clusters": {"c": record}}).clusters
-    monkeypatch.setitem(drivers.srt.lanes.SRT_LANES, ("c", MULTI), drivers.srt.lanes.SrtLane())
-    monkeypatch.setitem(power.POWER_LANES, ("c", MULTI), power.PowerLane(rules=()))
-    assert drivers.srt.table_problems(clusters, "c") == [
-        "POWER_LANES['c', srt-multi]: no srt-slurm.extra.default_gpu_exporter"
-    ]
-    srt.update(EXPORTER)
-    clusters = load_inventory({"labels": labels, "clusters": {"c": record}}).clusters
-    assert drivers.srt.table_problems(clusters, "c") == []
-
-
 AGENTX_FLASH = dict(MODEL_PREFIX="dsv41flash", FRAMEWORK="sglang", IS_MULTINODE="false",
                     IS_AGENTIC="1", EVAL_ONLY="false", SALLOC_TIME_LIMIT="480")
 
@@ -126,21 +111,63 @@ RECORD = {"gpus-per-node": 8, "arch": "x86_64", "scheduler": "slurm",
           "slurm": {"partition": "p", "exclusive": True}}  # fmt: skip
 
 
-def test_every_row_the_inventory_contradicts_is_reported_at_once(monkeypatch):
-    clusters = load_inventory({"labels": {"cluster:c": ["c_0"]}, "clusters": {"c": RECORD}}).clusters
-    monkeypatch.setitem(policy.SALLOC_TIME_BUMPS, "missing-cluster", None)
-    monkeypatch.setitem(models.OVERRIDES, "c", ())
-    with pytest.raises(LaunchError) as raised:
-        check_tables(clusters)
-    problems = str(raised.value)
-    assert "SALLOC_TIME_BUMPS['missing-cluster']: no such cluster" in problems
-    assert "OVERRIDES['c']" in problems
+def _cluster(srt=None, **record):
+    slurm = {**RECORD["slurm"], **({"srt-slurm": srt} if srt is not None else {}), **record.pop("slurm", {})}
+    inventory = {"labels": {"cluster:c": ["c_0"]}, "clusters": {"c": {**RECORD, **record, "slurm": slurm}}}
+    return load_inventory(inventory).clusters["c"]
+
+
+CONTRADICTED = Platform.model_validate({
+    "srt-lanes": {"srt-multi": {
+        "mounts": [{"when": {}, "volume": "wheels"}], "shared-run-root": [{}], "time-limit": "4:00:00",
+    }},
+    "salloc-time-bump": {"when": {}, "min-conc": 64, "minutes": 1440},
+    "power-lanes": {"srt-multi": []},
+    "model-overrides": [{"when": {}, "entry": "M"}],
+    "shared-hf-cache-lanes": [{"agentic": True}],
+})
+
+
+def test_every_platform_row_its_cluster_record_contradicts_is_reported_at_once():
+    fixed = {"network-interface": "", "default-time-limit": "6:00:00"}
+    assert CONTRADICTED.problems(_cluster(fixed)) == [
+        "srt-lanes.srt-multi: no volume 'wheels'",
+        "srt-lanes.srt-multi: no srt-slurm.shared-run-root",
+        "srt-lanes.srt-multi: its time limits are shadowed by default-time-limit",
+        "power-lanes.srt-multi: no srt-slurm.extra.default_gpu_exporter",
+        "model-overrides: no models.entries 'M'",
+        "shared-hf-cache-lanes: no volume 'shared-hf-hub-cache'",
+        "salloc-time-bump: shadowed by the cluster's fixed srt-slurm default-time-limit or "
+        "single-node-time-limit",
+    ]
+    assert CONTRADICTED.problems(_cluster()) == [
+        "srt-lanes: no slurm.srt-slurm profile",
+        "model-overrides: no slurm.srt-slurm profile",
+        "shared-hf-cache-lanes: no slurm.srt-slurm profile",
+    ]
+    volumes = {"wheels": {"path": "/wheels"}, "shared-hf-hub-cache": {"path": "/hub"}}
+    complete = _cluster(
+        {"network-interface": "", "shared-run-root": "/runs", **EXPORTER},
+        models={"entries": {"M": {"root": "wheels", "dir": "m"}}},
+        slurm={"volumes": volumes},
+    )
+    assert CONTRADICTED.problems(complete) == []
+
+
+@pytest.mark.parametrize(("rows", "message"), [
+    ({"power-lanes": {"srt-multi": []}}, "power-lanes for missing srt-lanes"),
+    ({"srt-lanes": {"srt-multi": {}}, "native-srt-lanes": [{}]}, "missing srt-lanes.srt-native"),
+])  # fmt: skip
+def test_a_rule_for_a_lane_the_platform_lacks_fails_to_load(rows, message):
+    with pytest.raises(ValidationError, match=message):
+        Platform.model_validate(rows)
 
 
 def test_a_launch_checks_its_own_cluster_rows_before_any_work(monkeypatch, capsys):
     labels = {"cluster:c": ["c_0"], "cluster:d": ["d_0"]}
     clusters = load_inventory({"labels": labels, "clusters": {"c": RECORD, "d": RECORD}}).clusters
-    monkeypatch.setitem(models.OVERRIDES, "d", ())
+    contradicted = Platform(model_overrides=(Override(when=Match()),))
+    monkeypatch.setitem(policy.PLATFORMS, "d", contradicted)
 
     class ReachedBackend(Exception):
         pass
@@ -152,9 +179,9 @@ def test_a_launch_checks_its_own_cluster_rows_before_any_work(monkeypatch, capsy
     with pytest.raises(ReachedBackend), Lifecycle() as life:
         drivers.run(clusters["c"], _request(IS_MULTINODE="false"), life)
 
-    monkeypatch.setitem(models.OVERRIDES, "c", ())
+    monkeypatch.setitem(policy.PLATFORMS, "c", contradicted)
     assert launch(clusters["c"], _request(IS_MULTINODE="false")) == 1
-    assert "OVERRIDES['c']" in capsys.readouterr().err
+    assert "configs/platforms/c.yaml disagrees" in capsys.readouterr().err
 
 
 HOST = {"CLUSTER": "host", "LATER": "host", "SHARED": "host"}
